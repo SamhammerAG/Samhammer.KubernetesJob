@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
@@ -37,7 +37,7 @@ namespace Samhammer.KubernetesJob.Redis
 
             if (value.HasValue)
             {
-                return JsonSerializer.Deserialize<QueueRedisMessage>(value);
+                return JsonSerializer.Deserialize<QueueRedisMessage>(value.ToString());
             }
 
             var defaultValue = new QueueRedisMessage();
