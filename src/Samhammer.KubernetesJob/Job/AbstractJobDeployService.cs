@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -37,14 +37,14 @@ namespace Samhammer.KubernetesJob.Job
 
         public async Task DeployOrQueueJob(TJobModel jobModel)
         {
+            jobModel.DateCreated = DateTime.UtcNow;
+            await JobRepository.Save(jobModel);
+
             if (Options.Value.DisableJob)
             {
                 Logger.LogInformation("Skipping deployment of job {JobId}, because it is disabled", jobModel.Id);
                 return;
             }
-
-            jobModel.DateCreated = DateTime.UtcNow;
-            await JobRepository.Save(jobModel);
 
             await using var redLock = await JobRedisQueueClient.CreateLockAsync();
 
