@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -71,6 +71,11 @@ namespace Samhammer.KubernetesJob.Job
 
         public async Task CleanupRedisQueue()
         {
+            if (!await JobRedisQueueClient.AnyRunningJobs())
+            {
+                return;
+            }
+
             await using var redLock = await JobRedisQueueClient.CreateLockAsync();
 
             if (!redLock.IsAcquired)
