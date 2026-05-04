@@ -100,6 +100,12 @@ namespace Samhammer.KubernetesJob.Redis
             await SetAsync(jobManagerData);
         }
 
+        public async Task<bool> AnyRunningJobs()
+        {
+            var jobManagerData = await GetAsync();
+            return jobManagerData.RunningJobs.Any();
+        }
+
         public async Task AddJobToRunningListAsync(QueueJobRedisMessage queueJobDefinition)
         {
             var jobManagerData = await GetAsync();
@@ -127,6 +133,8 @@ namespace Samhammer.KubernetesJob.Redis
         Task RemoveRunningJobAsync(string jobName);
 
         Task RemoveQueuedJobAsync(string jobName);
+
+        Task<bool> AnyRunningJobs();
     }
 
     public interface IBaseJobOptionsRedis
