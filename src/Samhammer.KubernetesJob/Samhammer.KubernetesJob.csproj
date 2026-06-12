@@ -31,9 +31,9 @@
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.5" />
     <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.5" />
     <PackageReference Include="RedLock.net" Version="2.3.2" />
-    <PackageReference Include="Samhammer.Mongo.Abstractions" Version="10.0.0" />
+    <PackageReference Include="Samhammer.Mongo.Abstractions" Version="10.0.1" />
     <PackageReference Include="Samhammer.TimedHostedService" Version="10.0.0" />
-    <PackageReference Include="Scriban" Version="7.0.0" />
+    <PackageReference Include="Scriban" Version="7.2.4" />
     <PackageReference Include="StyleCop.Analyzers" Version="1.2.0-beta.556">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
