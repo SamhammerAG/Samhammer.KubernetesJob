@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
@@ -248,7 +248,9 @@ namespace Samhammer.KubernetesJob.Kubernetes
                     propagationPolicy: "Foreground",
                     gracePeriodSeconds: gracePeriodSeconds);
 
-                if (!string.Equals(resultStatus.Status, "Success", StringComparison.OrdinalIgnoreCase))
+                // With foreground propagation the api server returns the deleted job object (deletion pending via finalizer)
+                // instead of a status object, which the client exposes as HasObject (see kubernetes-client/csharp#145).
+                if (!resultStatus.HasObject && !string.Equals(resultStatus.Status, "Success", StringComparison.OrdinalIgnoreCase))
                 {
                     Logger.LogError("Deleting k8s-job '{JobName}' failed with result {@K8sStatus}'", jobName, resultStatus);
                 }
