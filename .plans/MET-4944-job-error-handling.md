@@ -11,6 +11,8 @@ This covers only the library part of the concept. The Metis side (`RetryPending`
 
 ## Step 1: MET-4966, `CreateJobAsync` reports failures
 
+**Status:** done and reviewed. `CreateJobAsync` throws `KubernetesJobDeployException`; test seam via `protected virtual IKubernetes GetKubernetes()`. The `Running` check after create stays unchanged for now.
+
 **Problem:** `AbstractJobKubernetesClient.CreateJobAsync` (`src/Samhammer.KubernetesJob/Kubernetes/AbstractJobKubernetesClient.cs:74`) catches every exception and only logs it. The caller can't tell that the deploy failed.
 
 **Changes:**
@@ -101,6 +103,10 @@ Step 3 doesn't depend on steps 1 and 2, so it can be done in parallel or first.
 | 3 | MET-4968 | Small: new enum value `Unknown` |
 
 Release one tag after steps 1 and 2, e.g. **10.1.0**. Breaking interface changes like this are usually a minor bump here. Step 3 can go into the same release or a later one. Metis then updates the package and builds `RetryPending` on top of it.
+
+**Deferred / out of scope (from the step 1 review):**
+- Duplicate error logging (`CreateJobAsync` and the deploy service in step 2): acceptable, decide during step 2 if needed.
+- `GetKubernetes()` creates a new, never-disposed `k8s.Kubernetes` client per call. Out of scope for MET-4944, as it could be a bigger change.
 
 **Not part of this library:** `RetryPending`, the retry counter and delays, the "never started" check (Metis uses the existing `DeleteJobAsync`), prioritising retries, and recovering when Redis loses the queue.
 
