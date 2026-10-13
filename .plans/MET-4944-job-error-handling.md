@@ -31,9 +31,11 @@ This covers only the library part of the concept. The Metis side (`RetryPending`
 ## Step 2: MET-4967, deploy error hooks and `OnJobStarted` for queued jobs
 
 ### 2a. New hook and handling in `DeployOrQueueJob`
+
+**Status:** done. `CreateJobName` / `CreateJobTemplate` stay outside the try/catch (config errors still throw as before).
 File: `src/Samhammer.KubernetesJob/Job/AbstractJobDeployService.cs:38`
 
-- New hook: `public abstract Task OnJobDeployFailed(TJobModel jobModel, Exception exception)`. It's abstract so every consumer has to decide how to handle deploy failures. Nothing gets swallowed silently.
+- New hook: `public virtual Task OnJobDeployFailed(TJobModel jobModel, Exception exception)`, doing nothing by default like the other hooks.
 - Wrap the Redis and Kubernetes operations after the lock (`GetAsync`, `AddJobToQueueAsync` / `AddJobToRunningListAsync`, `DeployJobAsync`) in a try/catch. On failure:
   1. Best effort, with its own try/catch: `RemoveRunningJobAsync(jobName)` and `RemoveQueuedJobAsync(jobName)`. These can fail too if Redis is down.
   2. `LogError`, then `await OnJobDeployFailed(jobModel, e)`.
@@ -99,7 +101,7 @@ Step 3 doesn't depend on steps 1 and 2, so it can be done in parallel or first.
 | Order | PR | Breaking for consumers? |
 |---|---|---|
 | 1 | MET-4966 | Behaviour only: `DeployJobAsync` throws |
-| 2 | MET-4967 | Yes: `IBaseJobRepository.GetById`, new abstract `OnJobDeployFailed` (compile error until implemented), new `JobId` in the Redis entry (compatible both ways) |
+| 2 | MET-4967 | Yes: `IBaseJobRepository.GetById`, deploy errors no longer thrown unless `OnJobDeployFailed` rethrows (release notes), new `JobId` in the Redis entry (compatible both ways) |
 | 3 | MET-4968 | Small: new enum value `Unknown` |
 
 Release one tag after steps 1 and 2, e.g. **10.1.0**. Breaking interface changes like this are usually a minor bump here. Step 3 can go into the same release or a later one. Metis then updates the package and builds `RetryPending` on top of it.
@@ -113,9 +115,9 @@ Release one tag after steps 1 and 2, e.g. **10.1.0**. Breaking interface changes
 ---
 
 ## Decisions
-- **`OnJobDeployFailed` is abstract.** The library catches the deploy error, cleans up Redis and calls the hook, but doesn't rethrow. Because the hook is abstract, no consumer loses an error silently. Each one has to implement it explicitly:
+- **`OnJobDeployFailed` is virtual**, like all other hooks, and does nothing by default. The library catches the deploy error, logs it, cleans up Redis and calls the hook, but doesn't rethrow.
   - Data item import: set `RetryPending`.
   - Other jobs: set a failure status, or rethrow to keep the old behaviour (Redis errors used to throw, Kubernetes create errors were only logged).
-  - The other hooks (`OnJobStarted`, `OnJobQueued`, `OnCouldNotAcquireLock`) stay virtual. Only the failure hook is mandatory.
+  - **Release notes:** mention that Redis errors in `DeployOrQueueJob` are no longer thrown unless `OnJobDeployFailed` rethrows them.
 
 - **Hooks for queued jobs receive the full job model**, loaded from Mongo via `IBaseJobRepository.GetById`. The Redis entry stores only `JobId` as the lookup key.
