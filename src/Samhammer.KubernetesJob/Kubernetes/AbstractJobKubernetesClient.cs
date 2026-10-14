@@ -35,10 +35,14 @@ namespace Samhammer.KubernetesJob.Kubernetes
         public string CreateJobTemplate(T jobModel)
         {
             var placeholderValues = CreatePlaceholderDictionary(jobModel);
-            var templateDir = GetTemplateDirectory();
-            var templateData = System.IO.File.ReadAllText(templateDir);
+            var templateData = ReadTemplate();
             var parsingTemplate = Template.Parse(templateData);
             return parsingTemplate.Render(placeholderValues);
+        }
+
+        protected virtual string ReadTemplate()
+        {
+            return System.IO.File.ReadAllText(GetTemplateDirectory());
         }
 
         public abstract string CreateJobName(T jobModel);
@@ -92,7 +96,7 @@ namespace Samhammer.KubernetesJob.Kubernetes
                 var statusCode = e.Response?.StatusCode;
                 var response = e.Response?.Content;
 
-                Logger.LogError(e, "Creating k8s-job '{JobName}' failed with status code '{Status}' and response '{Response}'", jobName, statusCode, response);
+                Logger.LogError(e, "Creating k8s-job '{JobName}' failed with status code '{StatusCode}' and response '{Response}'", jobName, (int?)statusCode, response);
                 throw new KubernetesJobDeployException(jobName, statusCode, response, e);
             }
             catch (Exception e)
@@ -118,8 +122,9 @@ namespace Samhammer.KubernetesJob.Kubernetes
             }
             catch (Exception e)
             {
+                // Rethrown instead of returning an empty list, so the caller can't mistake an error for "no jobs running"
                 Logger.LogError(e, "Unexpected error while loading k8s-jobs of namespace {Namespace}", kubernetesNamespace);
-                return new List<V1Job>();
+                throw;
             }
         }
 
@@ -132,14 +137,16 @@ namespace Samhammer.KubernetesJob.Kubernetes
 
         protected abstract Dictionary<string, string> CreateJobTypeLabelSelector();
 
-        protected async Task<V1Job> ReadJobAsync(V1Job job)
+        // Returns the job, or null and the status code of the failed request (null if the request failed without a response)
+        protected async Task<(V1Job Job, HttpStatusCode? StatusCode)> ReadJobAsync(V1Job job)
         {
             var kubernetesNamespace = job.Metadata.NamespaceProperty;
             var jobName = job.Metadata.Name;
 
             try
             {
-                return await GetKubernetes().BatchV1.ReadNamespacedJobAsync(jobName, kubernetesNamespace);
+                var readJob = await GetKubernetes().BatchV1.ReadNamespacedJobAsync(jobName, kubernetesNamespace);
+                return (readJob, null);
             }
             catch (HttpOperationException e)
             {
@@ -148,26 +155,27 @@ namespace Samhammer.KubernetesJob.Kubernetes
 
                 if (statusCode == HttpStatusCode.NotFound)
                 {
-                    Logger.LogDebug("Reading k8s-job '{JobName}' skipped, status code '{Status}''", jobName, statusCode);
+                    Logger.LogDebug("Reading k8s-job '{JobName}' skipped, status code '{StatusCode}'", jobName, (int?)statusCode);
                 }
                 else
                 {
-                    Logger.LogError(e, "Reading k8s-job '{JobName}' failed with status code '{Status}' and response '{Response}'", jobName, statusCode, response);
+                    Logger.LogError(e, "Reading k8s-job '{JobName}' failed with status code '{StatusCode}' and response '{Response}'", jobName, (int?)statusCode, response);
                 }
+
+                return (null, statusCode);
             }
             catch (Exception e)
             {
                 Logger.LogError(e, "Unexpected error while reading k8s-job {JobName} of namespace {Namespace}", jobName, kubernetesNamespace);
+                return (null, null);
             }
-
-            return null;
         }
 
         public async Task<KubernetesJobStatus> GetJobStatusAsync(T jobModel)
         {
             var jobDefinition = CreateJobDefinition(jobModel);
-            var job = await ReadJobAsync(jobDefinition);
-            var kubernetesJobStatus = MapJobStatus(job);
+            var (job, statusCode) = await ReadJobAsync(jobDefinition);
+            var kubernetesJobStatus = MapJobStatus(job, statusCode);
 
             Logger.LogDebug("GetOrCreateConfigs status of k8s-job '{JobName}' returned '{KubernetesStatus}'", jobDefinition.Metadata.Name, kubernetesJobStatus);
             return kubernetesJobStatus;
@@ -190,11 +198,12 @@ namespace Samhammer.KubernetesJob.Kubernetes
             return status.Contains(jobStatus);
         }
 
-        private KubernetesJobStatus MapJobStatus(V1Job job)
+        private KubernetesJobStatus MapJobStatus(V1Job job, HttpStatusCode? statusCode = null)
         {
             if (job == null)
             {
-                return KubernetesJobStatus.Deleted;
+                // Only a 404 means the job is deleted. Any other error (e.g. kubernetes api not reachable) must not be treated as deleted.
+                return statusCode == HttpStatusCode.NotFound ? KubernetesJobStatus.Deleted : KubernetesJobStatus.Unknown;
             }
 
             if (job.Status == null || job.Status.Conditions == null)
@@ -227,7 +236,7 @@ namespace Samhammer.KubernetesJob.Kubernetes
                 var statusCode = e.Response?.StatusCode;
                 var response = e.Response?.Content;
 
-                Logger.LogError(e, "Deleting k8s-job '{JobName}' failed with status code '{Status}' and response '{Response}'", job.Metadata.Name, statusCode, response);
+                Logger.LogError(e, "Deleting k8s-job '{JobName}' failed with status code '{StatusCode}' and response '{Response}'", job.Metadata.Name, (int?)statusCode, response);
             }
             catch (Exception e)
             {
@@ -264,7 +273,7 @@ namespace Samhammer.KubernetesJob.Kubernetes
                 // Ignore not found (already deleted)
                 if (statusCode == HttpStatusCode.NotFound)
                 {
-                    Logger.LogDebug("Deleting k8s-job '{JobName}' skipped, status code '{Status}'", jobName, statusCode);
+                    Logger.LogDebug("Deleting k8s-job '{JobName}' skipped, status code '{StatusCode}'", jobName, (int?)statusCode);
                 }
                 else
                 {
