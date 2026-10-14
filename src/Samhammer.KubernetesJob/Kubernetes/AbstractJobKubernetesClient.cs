@@ -122,8 +122,9 @@ namespace Samhammer.KubernetesJob.Kubernetes
             }
             catch (Exception e)
             {
+                // Rethrown instead of returning an empty list, so the caller can't mistake an error for "no jobs running"
                 Logger.LogError(e, "Unexpected error while loading k8s-jobs of namespace {Namespace}", kubernetesNamespace);
-                return new List<V1Job>();
+                throw;
             }
         }
 

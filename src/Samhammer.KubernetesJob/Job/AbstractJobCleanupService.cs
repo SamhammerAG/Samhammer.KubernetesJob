@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using k8s.Models;
 using Microsoft.Extensions.Logging;
 using Samhammer.KubernetesJob.Kubernetes;
 using Samhammer.KubernetesJob.MongoDb;
@@ -88,7 +90,19 @@ namespace Samhammer.KubernetesJob.Job
                 return;
             }
 
-            var runningJobs = await JobKubernetesClient.GetJobsAsync(KubernetesJobStatus.Running);
+            List<V1Job> runningJobs;
+
+            try
+            {
+                runningJobs = await JobKubernetesClient.GetJobsAsync(KubernetesJobStatus.Running);
+            }
+            catch (Exception)
+            {
+                // Already logged in GetJobsAsync. Without the list, all running jobs would be removed from redis and MaxRunningJobs would no longer be enforced.
+                Logger.LogWarning("Skipping cleanup of job redis queue, because the running k8s-jobs could not be loaded");
+                return;
+            }
+
             var runningJobsNames = runningJobs.Select(c => c.Metadata.Name).ToList();
 
             var removedJobNames = await JobRedisQueueClient.RemoveRunningJobsExceptAsync(runningJobsNames);

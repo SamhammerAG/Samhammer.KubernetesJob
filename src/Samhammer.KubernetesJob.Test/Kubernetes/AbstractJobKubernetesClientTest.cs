@@ -162,6 +162,21 @@ namespace Samhammer.KubernetesJob.Test.Kubernetes
             status.Should().Be(KubernetesJobStatus.Unknown);
         }
 
+        [Fact]
+        public async Task GetJobsAsync_ListFails_Throws()
+        {
+            // Arrange
+            var exception = new HttpRequestException("connection refused");
+            batchV1.ListNamespacedJobWithHttpMessagesAsync(null, cancellationToken: TestContext.Current.CancellationToken)
+                .ThrowsAsyncForAnyArgs(exception);
+
+            // Act
+            var act = () => client.GetJobsAsync(KubernetesJobStatus.Running);
+
+            // Assert
+            (await act.Should().ThrowAsync<HttpRequestException>()).Which.Should().BeSameAs(exception);
+        }
+
         private static HttpOperationException CreateHttpOperationException(HttpStatusCode statusCode, string content)
         {
             return new HttpOperationException

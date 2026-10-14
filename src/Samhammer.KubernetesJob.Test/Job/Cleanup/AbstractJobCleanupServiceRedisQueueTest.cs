@@ -1,8 +1,10 @@
 using System.Collections.Generic;
+using System.Net.Http;
 using System.Threading.Tasks;
 using k8s.Models;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
+using NSubstitute.ExceptionExtensions;
 using RedLockNet;
 using Samhammer.KubernetesJob.Kubernetes;
 using Samhammer.KubernetesJob.MongoDb;
@@ -83,6 +85,23 @@ namespace Samhammer.KubernetesJob.Test.Job.Cleanup
             await redisQueueClient.Received(1).AnyRunningJobs();
             await redisQueueClient.Received(1).CreateLockAsync();
             await kubernetesClient.DidNotReceive().GetJobsAsync(Arg.Any<KubernetesJobStatus[]>());
+            await redisQueueClient.DidNotReceive().RemoveRunningJobsExceptAsync(Arg.Any<List<string>>());
+        }
+
+        [Fact]
+        public async Task CleanupRedisQueue_LoadingRunningJobsFails_RemovesNoJobs()
+        {
+            // arrange
+            var redLock = Substitute.For<IRedLock>();
+            redLock.IsAcquired.Returns(true);
+            redisQueueClient.AnyRunningJobs().Returns(true);
+            redisQueueClient.CreateLockAsync().Returns(redLock);
+            kubernetesClient.GetJobsAsync(Arg.Any<KubernetesJobStatus[]>()).ThrowsAsync(new HttpRequestException("connection refused"));
+
+            // act
+            await service.CleanupRedisQueue();
+
+            // assert
             await redisQueueClient.DidNotReceive().RemoveRunningJobsExceptAsync(Arg.Any<List<string>>());
         }
     }
