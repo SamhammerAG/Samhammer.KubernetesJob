@@ -60,25 +60,65 @@ namespace Samhammer.KubernetesJob.Job
 
             var jobContract = new QueueJobRedisMessage
             {
+                JobId = jobModel.Id,
                 JobName = jobName,
                 JobTemplate = jobTemplate
             };
 
-            var jobManagerData = await JobRedisQueueClient.GetAsync();
-            if (jobManagerData.RunningJobs.Count >= Options.Value.MaxRunningJobs || jobManagerData.QueuedJobs.Any())
+            var isQueued = false;
+            Exception deployException = null;
+
+            try
             {
-                Logger.LogInformation("Start queueing job {JobId}", jobModel.Id);
-                await JobRedisQueueClient.AddJobToQueueAsync(jobContract);
+                var jobManagerData = await JobRedisQueueClient.GetAsync();
+                isQueued = jobManagerData.RunningJobs.Count >= Options.Value.MaxRunningJobs || jobManagerData.QueuedJobs.Any();
+
+                if (isQueued)
+                {
+                    Logger.LogInformation("Start queueing job {JobId} ({JobName})", jobModel.Id, jobName);
+                    await JobRedisQueueClient.AddJobToQueueAsync(jobContract);
+                }
+                else
+                {
+                    Logger.LogInformation("Start deploying job {JobId} ({JobName})", jobModel.Id, jobName);
+                    await JobRedisQueueClient.AddJobToRunningListAsync(jobContract);
+                    await JobKubernetesClient.DeployJobAsync(jobContract.JobTemplate);
+                }
+            }
+            catch (Exception e)
+            {
+                Logger.LogError(e, "Deploying job {JobId} ({JobName}) failed", jobModel.Id, jobName);
+                await TryRemoveJobFromRedis(jobName);
+                deployException = e;
+            }
+
+            // Hooks are called outside the try block, so a failing hook doesn't mark a deployed job as failed
+            if (deployException != null)
+            {
+                await OnJobDeployFailed(jobModel, deployException);
+            }
+            else if (isQueued)
+            {
                 await OnJobQueued(jobModel);
-                Logger.LogInformation("Completed queueing job {JobId}", jobModel.Id);
+                Logger.LogInformation("Completed queueing job {JobId} ({JobName})", jobModel.Id, jobName);
             }
             else
             {
-                Logger.LogInformation("Start deploying {JobId}", jobModel.Id);
-                await JobRedisQueueClient.AddJobToRunningListAsync(jobContract);
-                await JobKubernetesClient.DeployJobAsync(jobContract.JobTemplate);
                 await OnJobStarted(jobModel);
-                Logger.LogInformation("Completed deploying job {JobId}", jobModel.Id);
+                Logger.LogInformation("Completed deploying job {JobId} ({JobName})", jobModel.Id, jobName);
+            }
+        }
+
+        private async Task TryRemoveJobFromRedis(string jobName)
+        {
+            try
+            {
+                await JobRedisQueueClient.RemoveQueuedJobAsync(jobName);
+                await JobRedisQueueClient.RemoveRunningJobAsync(jobName);
+            }
+            catch (Exception e)
+            {
+                Logger.LogError(e, "Removing job {JobName} from redis after failed deployment failed", jobName);
             }
         }
 
@@ -93,6 +133,11 @@ namespace Samhammer.KubernetesJob.Job
         }
 
         public virtual Task OnJobQueued(TJobModel jobModel)
+        {
+            return Task.CompletedTask;
+        }
+
+        public virtual Task OnJobDeployFailed(TJobModel jobModel, Exception exception)
         {
             return Task.CompletedTask;
         }
@@ -117,14 +162,43 @@ namespace Samhammer.KubernetesJob.Job
                     break;
                 }
 
-                Logger.LogInformation("Start deploying job {JobName} from redis queue", job.JobName);
+                Logger.LogInformation("Start deploying job {JobId} ({JobName}) from redis queue", job.JobId, job.JobName);
 
-                await JobKubernetesClient.DeployJobAsync(job.JobTemplate);
-                await JobRedisQueueClient.MoveJobToRunningAsync(job);
+                Exception deployException = null;
 
-                Logger.LogInformation("Completed deploying job {JobName} from redis queue", job.JobName);
+                try
+                {
+                    // Moved to running before deploying, so a failed move can't leave a deployed job marked as failed
+                    await JobRedisQueueClient.MoveJobToRunningAsync(job);
+                    await JobKubernetesClient.DeployJobAsync(job.JobTemplate);
 
-                runningJobCount++;
+                    // Only a successful deployment takes a slot. A failed one throws before this
+                    runningJobCount++;
+                }
+                catch (Exception e)
+                {
+                    Logger.LogError(e, "Deploying job {JobId} ({JobName}) from redis queue failed", job.JobId, job.JobName);
+                    await TryRemoveJobFromRedis(job.JobName);
+                    deployException = e;
+                }
+
+                // Hooks are called outside the try block, so a failing hook doesn't mark a deployed job as failed.
+                // JobId is null for entries queued by an older version. The null check can be removed in a future version, once no such entries are left.
+                var jobModel = job.JobId != null ? await JobRepository.GetById(job.JobId) : null;
+
+                if (jobModel == null)
+                {
+                    Logger.LogWarning("No job model found for queued job {JobId} ({JobName}). Skipping hooks", job.JobId, job.JobName);
+                }
+                else if (deployException != null)
+                {
+                    await OnJobDeployFailed(jobModel, deployException);
+                }
+                else
+                {
+                    await OnJobStarted(jobModel);
+                    Logger.LogInformation("Completed deploying job {JobId} ({JobName}) from redis queue", job.JobId, job.JobName);
+                }
             }
         }
 
@@ -145,16 +219,16 @@ namespace Samhammer.KubernetesJob.Job
                 throw new TimeoutException($"Could not acquire lock to abort job {jobModel.Id}");
             }
 
-            Logger.LogInformation("Aborting job {JobId} (requested by {UserName})", jobModel.Id, userName);
-            await OnJobAborting(jobModel);
-
             var jobName = JobKubernetesClient.CreateJobName(jobModel);
+
+            Logger.LogInformation("Aborting job {JobId} ({JobName}) (requested by {UserName})", jobModel.Id, jobName, userName);
+            await OnJobAborting(jobModel);
 
             await JobRedisQueueClient.RemoveQueuedJobAsync(jobName);
             await JobKubernetesClient.DeleteJobAsync(jobModel);
             await JobRedisQueueClient.RemoveRunningJobAsync(jobName);
 
-            Logger.LogInformation("Completed aborting job {JobId}", jobModel.Id);
+            Logger.LogInformation("Completed aborting job {JobId} ({JobName})", jobModel.Id, jobName);
         }
 
         public virtual Task OnJobAborting(TJobModel jobModel)

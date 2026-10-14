@@ -47,7 +47,7 @@ namespace Samhammer.KubernetesJob.Kubernetes
 
         protected abstract string GetTemplateDirectory();
 
-        protected k8s.Kubernetes GetKubernetes()
+        protected virtual IKubernetes GetKubernetes()
         {
             if (HostEnvironment.IsDevelopment())
             {
@@ -79,7 +79,7 @@ namespace Samhammer.KubernetesJob.Kubernetes
             {
                 Logger.LogInformation("Creating k8s-job '{JobName}'", jobName);
 
-                var createdJob = await GetKubernetes().CreateNamespacedJobAsync(job, job.Metadata.NamespaceProperty);
+                var createdJob = await GetKubernetes().BatchV1.CreateNamespacedJobAsync(job, job.Metadata.NamespaceProperty);
                 var jobStatus = MapJobStatus(createdJob);
 
                 if (jobStatus != KubernetesJobStatus.Running)
@@ -93,10 +93,12 @@ namespace Samhammer.KubernetesJob.Kubernetes
                 var response = e.Response?.Content;
 
                 Logger.LogError(e, "Creating k8s-job '{JobName}' failed with status code '{Status}' and response '{Response}'", jobName, statusCode, response);
+                throw new KubernetesJobDeployException(jobName, statusCode, response, e);
             }
             catch (Exception e)
             {
                 Logger.LogError(e, "Unexpected error while creating k8s-job '{JobName}'", jobName);
+                throw new KubernetesJobDeployException(jobName, null, null, e);
             }
         }
 
@@ -108,7 +110,7 @@ namespace Samhammer.KubernetesJob.Kubernetes
             try
             {
                 var labelSelector = GetJobTypeLabelSelector();
-                var result = await GetKubernetes().ListNamespacedJobAsync(kubernetesNamespace, labelSelector: labelSelector);
+                var result = await GetKubernetes().BatchV1.ListNamespacedJobAsync(kubernetesNamespace, labelSelector: labelSelector);
 
                 return result.Items
                     .Where(job => HasJobStatus(job, status))
@@ -137,7 +139,7 @@ namespace Samhammer.KubernetesJob.Kubernetes
 
             try
             {
-                return await GetKubernetes().ReadNamespacedJobAsync(jobName, kubernetesNamespace);
+                return await GetKubernetes().BatchV1.ReadNamespacedJobAsync(jobName, kubernetesNamespace);
             }
             catch (HttpOperationException e)
             {
@@ -155,7 +157,7 @@ namespace Samhammer.KubernetesJob.Kubernetes
             }
             catch (Exception e)
             {
-                Logger.LogError(e, "Unexpected error while reading k8s-job {JobName} of namespace {Namespace}", kubernetesNamespace, jobName);
+                Logger.LogError(e, "Unexpected error while reading k8s-job {JobName} of namespace {Namespace}", jobName, kubernetesNamespace);
             }
 
             return null;
@@ -242,7 +244,7 @@ namespace Samhammer.KubernetesJob.Kubernetes
             {
                 Logger.LogInformation("Deleting k8s-job '{JobName}'", jobName);
 
-                var resultStatus = await GetKubernetes().DeleteNamespacedJobAsync(
+                var resultStatus = await GetKubernetes().BatchV1.DeleteNamespacedJobAsync(
                     jobName,
                     kubernetesNamespace,
                     propagationPolicy: "Foreground",
