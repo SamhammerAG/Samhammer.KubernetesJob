@@ -227,6 +227,8 @@ Use the cleanup service to update your job collection (status) if something unex
 
 * Processes all started and running jobs
 * In case of an unexpected status like failed or deleted you can react
+* `OnKubernetesJobDeleted` is only called if kubernetes reports the job as not found (404)
+* If the job status can't be read (e.g. the kubernetes api is not reachable), the job is skipped and checked again in the next run. No hook is called in this case.
 
 
 ```csharp
