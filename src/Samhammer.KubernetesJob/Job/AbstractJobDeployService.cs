@@ -60,11 +60,13 @@ namespace Samhammer.KubernetesJob.Job
 
             var jobContract = new QueueJobRedisMessage
             {
+                JobId = jobModel.Id,
                 JobName = jobName,
                 JobTemplate = jobTemplate
             };
 
-            bool isQueued;
+            var isQueued = false;
+            Exception deployException = null;
 
             try
             {
@@ -87,12 +89,15 @@ namespace Samhammer.KubernetesJob.Job
             {
                 Logger.LogError(e, "Deploying job {JobId} failed", jobModel.Id);
                 await TryRemoveJobFromRedis(jobName);
-                await OnJobDeployFailed(jobModel, e);
-                return;
+                deployException = e;
             }
 
-            // Hooks are called outside of the try block, so a failing hook doesn't mark a deployed job as failed
-            if (isQueued)
+            // Hooks are called outside the try block, so a failing hook doesn't mark a deployed job as failed
+            if (deployException != null)
+            {
+                await OnJobDeployFailed(jobModel, deployException);
+            }
+            else if (isQueued)
             {
                 await OnJobQueued(jobModel);
                 Logger.LogInformation("Completed queueing job {JobId}", jobModel.Id);
@@ -159,12 +164,41 @@ namespace Samhammer.KubernetesJob.Job
 
                 Logger.LogInformation("Start deploying job {JobName} from redis queue", job.JobName);
 
-                await JobKubernetesClient.DeployJobAsync(job.JobTemplate);
-                await JobRedisQueueClient.MoveJobToRunningAsync(job);
+                Exception deployException = null;
 
-                Logger.LogInformation("Completed deploying job {JobName} from redis queue", job.JobName);
+                try
+                {
+                    // Moved to running before deploying, so a failed move can't leave a deployed job marked as failed
+                    await JobRedisQueueClient.MoveJobToRunningAsync(job);
+                    await JobKubernetesClient.DeployJobAsync(job.JobTemplate);
 
-                runningJobCount++;
+                    // Only a successful deployment takes a slot. A failed one throws before this
+                    runningJobCount++;
+                }
+                catch (Exception e)
+                {
+                    Logger.LogError(e, "Deploying job {JobName} from redis queue failed", job.JobName);
+                    await TryRemoveJobFromRedis(job.JobName);
+                    deployException = e;
+                }
+
+                // Hooks are called outside the try block, so a failing hook doesn't mark a deployed job as failed.
+                // JobId is null for entries queued by an older version. The null check can be removed in a future version, once no such entries are left.
+                var jobModel = job.JobId != null ? await JobRepository.GetById(job.JobId) : null;
+
+                if (jobModel == null)
+                {
+                    Logger.LogWarning("No job model found for queued job {JobName} (job id {JobId}). Skipping hooks", job.JobName, job.JobId);
+                }
+                else if (deployException != null)
+                {
+                    await OnJobDeployFailed(jobModel, deployException);
+                }
+                else
+                {
+                    await OnJobStarted(jobModel);
+                    Logger.LogInformation("Completed deploying job {JobName} from redis queue", job.JobName);
+                }
             }
         }
 

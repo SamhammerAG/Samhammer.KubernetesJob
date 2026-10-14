@@ -32,26 +32,29 @@ This covers only the library part of the concept. The Metis side (`RetryPending`
 
 ### 2a. New hook and handling in `DeployOrQueueJob`
 
-**Status:** done. `CreateJobName` / `CreateJobTemplate` stay outside the try/catch (config errors still throw as before).
+**Status:** done and reviewed, including the direct deploy tests from 2c. `CreateJobName` / `CreateJobTemplate` stay outside the try/catch (config errors still throw as before).
 File: `src/Samhammer.KubernetesJob/Job/AbstractJobDeployService.cs:38`
 
 - New hook: `public virtual Task OnJobDeployFailed(TJobModel jobModel, Exception exception)`, doing nothing by default like the other hooks.
 - Wrap the Redis and Kubernetes operations after the lock (`GetAsync`, `AddJobToQueueAsync` / `AddJobToRunningListAsync`, `DeployJobAsync`) in a try/catch. On failure:
-  1. Best effort, with its own try/catch: `RemoveRunningJobAsync(jobName)` and `RemoveQueuedJobAsync(jobName)`. These can fail too if Redis is down.
-  2. `LogError`, then `await OnJobDeployFailed(jobModel, e)`.
-  3. The library doesn't rethrow. The consumer decides in the hook: the data item import sets `RetryPending`, other jobs set a failure status, or rethrow (`throw` / `ExceptionDispatchInfo.Throw(exception)`) to keep the old behaviour.
+  1. `LogError`.
+  2. Best effort, with its own try/catch: `RemoveQueuedJobAsync(jobName)` and `RemoveRunningJobAsync(jobName)`. These can fail too if Redis is down.
+  3. `await OnJobDeployFailed(jobModel, e)`.
+  4. The library doesn't rethrow. The consumer decides in the hook: the data item import sets `RetryPending`, other jobs set a failure status, or rethrow (`throw` / `ExceptionDispatchInfo.Throw(exception)`) to keep the old behaviour.
 - The success hooks (`OnJobStarted`, `OnJobQueued`) stay **outside** the try/catch. If Mongo fails after a successful deploy, that must not trigger the failure hook, or a running job would get retried.
 
 ### 2b. Hooks in `DeployQueuedJobs`
+
+**Status:** implemented with the queue tests from 2c, not reviewed yet. Simplified compared to the bullets below: entries without `JobId` and entries whose model isn't found take the same path. They get the new order and Redis cleanup, only the hooks are skipped (with a warning). Nothing is removed from the queue just because the model is missing. The hooks never receive `null`, so consumers don't need null checks. The model is only loaded after the try/catch, right before the hooks: the caught exception decides whether `OnJobStarted` or `OnJobDeployFailed` is called. So a Mongo outage doesn't block the deploy itself.
 File: `src/Samhammer.KubernetesJob/Job/AbstractJobDeployService.cs:100`
 
 - **The hooks (`OnJobStarted`, `OnJobDeployFailed`) receive the full job model, loaded from Mongo**, the same as in the direct deploy.
 - To load it, the Redis entry needs the model's key: **add `JobId` to `QueueJobRedisMessage`** and set it in `DeployOrQueueJob`. This is only the lookup key, never passed to the hooks. Avoid parsing the job name, because `CreateJobName` is defined by the consumer and can't be reversed reliably. Matching against `GetRunningAndCreatedJobs` doesn't work either, because that list isn't guaranteed to contain queued jobs.
 - Add `Task<T> GetById(string id)` to `IBaseJobRepository<T>`. This assumes `BaseRepositoryMongo` in Metis already provides it with a matching signature. If not, Metis needs a one-line implementation.
 - For each queued job:
-  - Old entry without `JobId` (from before the release): deploy as today with no hooks, and log a warning. This only matters during the transition.
-  - Load the model with `JobRepository.GetById(job.JobId)`. If it's `null`, remove the entry from the queue, log a warning and skip it.
-  - Wrap `DeployJobAsync` and `MoveJobToRunningAsync` in a try/catch:
+  - Load the model with `JobRepository.GetById(job.JobId)`. If there's no `JobId` (old entry from before the release, only during the transition) or the model isn't found (should never happen): log a warning and deploy without hooks.
+  - Swap the order to `MoveJobToRunningAsync`, then `DeployJobAsync` (like `AddJobToRunningListAsync` before `DeployJobAsync` in 2a). With the old order, a failing move after a successful deploy would call `OnJobDeployFailed` for a job that is running, and the retry would start a duplicate. With the new order, a failing deploy is undone by the cleanup below.
+  - Wrap `MoveJobToRunningAsync` and `DeployJobAsync` in a try/catch:
     - Success: `OnJobStarted(model)`, then `runningJobCount++`.
     - Failure: `RemoveQueuedJobAsync` and `RemoveRunningJobAsync` (best effort), then `OnJobDeployFailed(model, e)`, then **continue with the next job**. The slot isn't counted.
 - The entry is removed from the queue on failure, so it no longer gets stuck in `Queued` forever.
@@ -64,7 +67,7 @@ File: `src/Samhammer.KubernetesJob/Job/AbstractJobDeployService.cs:100`
 - Queue deploy fails for job 1: it's removed from the queue, the hook is called, and job 2 still gets deployed.
 - The hook rethrows: the exception reaches the caller of `DeployOrQueueJob` / `DeployQueuedJobs`.
 - Old entry without `JobId`: deployed with no hooks.
-- Model not found: the entry is removed and nothing is deployed.
+- Model not found: deployed with no hooks.
 
 ### 2d. README
 Document `OnJobDeployFailed` (required, with examples: set a failure status, or rethrow to keep the old behaviour), `GetById` and the "hooks now also fire for queued jobs" behaviour.
@@ -80,6 +83,7 @@ File: `src/Samhammer.KubernetesJob/Kubernetes/AbstractJobKubernetesClient.cs:133
 - Add `KubernetesJobStatus.Unknown`, appended at the end of the enum so existing values keep their positions.
 - `ReadJobAsync` returns `null` only for a 404. Any other error throws, or `GetJobStatusAsync` catches it and returns `Unknown`. Recommended: return `Unknown`, so the cleanup loop keeps going through the other jobs.
 - `CleanupJobs` ignores `Unknown`: it logs a warning and calls no hook.
+- **TODO:** fix the log in `ReadJobAsync` (`AbstractJobKubernetesClient.cs:160`): it passes `kubernetesNamespace, jobName` to the template `{JobName} of namespace {Namespace}`, so both values end up in the wrong place.
 
 ### 3b. A failed job list must not clear the running list
 File: `src/Samhammer.KubernetesJob/Job/AbstractJobCleanupService.cs:87`
@@ -107,7 +111,6 @@ Step 3 doesn't depend on steps 1 and 2, so it can be done in parallel or first.
 Release one tag after steps 1 and 2, e.g. **10.1.0**. Breaking interface changes like this are usually a minor bump here. Step 3 can go into the same release or a later one. Metis then updates the package and builds `RetryPending` on top of it.
 
 **Deferred / out of scope (from the step 1 review):**
-- Duplicate error logging (`CreateJobAsync` and the deploy service in step 2): acceptable, decide during step 2 if needed.
 - `GetKubernetes()` creates a new, never-disposed `k8s.Kubernetes` client per call. Out of scope for MET-4944, as it could be a bigger change.
 
 **Not part of this library:** `RetryPending`, the retry counter and delays, the "never started" check (Metis uses the existing `DeleteJobAsync`), prioritising retries, and recovering when Redis loses the queue.
@@ -119,5 +122,7 @@ Release one tag after steps 1 and 2, e.g. **10.1.0**. Breaking interface changes
   - Data item import: set `RetryPending`.
   - Other jobs: set a failure status, or rethrow to keep the old behaviour (Redis errors used to throw, Kubernetes create errors were only logged).
   - **Release notes:** mention that Redis errors in `DeployOrQueueJob` are no longer thrown unless `OnJobDeployFailed` rethrows them.
+
+- **Duplicate error logging is intended.** A Kubernetes create error is logged by `CreateJobAsync` (status code and response) and again by the deploy service (`JobId`). One log comes from the client, the other from the deploy logic.
 
 - **Hooks for queued jobs receive the full job model**, loaded from Mongo via `IBaseJobRepository.GetById`. The Redis entry stores only `JobId` as the lookup key.

@@ -24,12 +24,14 @@ namespace Samhammer.KubernetesJob.Test.Job.Deploy
         private const string JobTemplate = "anyTemplate";
 
         private readonly AbstractJobDeployService<TestDeployJobModel, IBaseJobRepository<TestDeployJobModel>, TestDeployOptions, IBaseJobKubernetesClient<TestDeployJobModel>, IBaseRedisQueueClient> service;
+        private readonly IBaseJobRepository<TestDeployJobModel> jobRepository;
         private readonly IBaseJobKubernetesClient<TestDeployJobModel> kubernetesClient;
         private readonly IBaseRedisQueueClient redisQueueClient;
         private readonly IRedLock redLock;
         private readonly QueueRedisMessage queue = new();
 
         private readonly TestDeployJobModel job = new() { Status = TestDeployJobStatus.Created, Id = JobId };
+        private readonly QueueJobRedisMessage queuedJob = new() { JobId = JobId, JobName = JobName, JobTemplate = JobTemplate };
         private readonly TestDeployOptions options = new() { DisableJob = false, MaxRunningJobs = 1 };
 
         private bool lockAcquired = true;
@@ -39,7 +41,7 @@ namespace Samhammer.KubernetesJob.Test.Job.Deploy
             var logger = NullLogger<AbstractJobDeployService<TestDeployJobModel, IBaseJobRepository<TestDeployJobModel>, TestDeployOptions, IBaseJobKubernetesClient<TestDeployJobModel>, IBaseRedisQueueClient>>.Instance;
             var iOptions = Options.Create(options);
 
-            var jobRepository = Substitute.For<IBaseJobRepository<TestDeployJobModel>>();
+            jobRepository = Substitute.For<IBaseJobRepository<TestDeployJobModel>>();
             kubernetesClient = Substitute.For<IBaseJobKubernetesClient<TestDeployJobModel>>();
             redisQueueClient = Substitute.For<IBaseRedisQueueClient>();
             redLock = Substitute.For<IRedLock>();
@@ -49,6 +51,7 @@ namespace Samhammer.KubernetesJob.Test.Job.Deploy
             redisQueueClient.GetAsync().Returns(queue);
             kubernetesClient.CreateJobName(job).Returns(JobName);
             kubernetesClient.CreateJobTemplate(job).Returns(JobTemplate);
+            jobRepository.GetById(JobId).Returns(job);
 
             // Partial substitute: runs the real deploy logic, records calls to the virtual On* hooks
             service = Substitute.ForPartsOf<AbstractJobDeployService<TestDeployJobModel, IBaseJobRepository<TestDeployJobModel>, TestDeployOptions, IBaseJobKubernetesClient<TestDeployJobModel>, IBaseRedisQueueClient>>(
@@ -119,6 +122,102 @@ namespace Samhammer.KubernetesJob.Test.Job.Deploy
         }
 
         [Fact]
+        public async Task DeployQueuedJobs_DeploysJob_CallsOnJobStartedWithLoadedModel()
+        {
+            // Arrange
+            queue.QueuedJobs.Add(queuedJob);
+
+            // Act
+            await service.DeployQueuedJobs();
+
+            // Assert
+            Received.InOrder(async () =>
+            {
+                await redisQueueClient.MoveJobToRunningAsync(queuedJob);
+                await kubernetesClient.DeployJobAsync(JobTemplate);
+            });
+
+            await service.Received(1).OnJobStarted(job);
+            await service.DidNotReceiveWithAnyArgs().OnJobDeployFailed(null, null);
+        }
+
+        [Fact]
+        public async Task DeployQueuedJobs_DeployJobFails_CallsOnJobDeployFailedAndDeploysNextJob()
+        {
+            // Arrange
+            var exception = new KubernetesJobDeployException(JobName, null, null, new Exception("kubernetes api down"));
+            var job2 = new TestDeployJobModel { Status = TestDeployJobStatus.Created, Id = "AnyId2" };
+            var queuedJob2 = new QueueJobRedisMessage { JobId = job2.Id, JobName = "any2", JobTemplate = "anyTemplate2" };
+
+            queue.QueuedJobs.Add(queuedJob);
+            queue.QueuedJobs.Add(queuedJob2);
+            jobRepository.GetById(job2.Id).Returns(job2);
+            kubernetesClient.DeployJobAsync(JobTemplate).ThrowsAsync(exception);
+
+            // Act
+            await service.DeployQueuedJobs();
+
+            // Assert
+            await redisQueueClient.Received(1).RemoveQueuedJobAsync(JobName);
+            await redisQueueClient.Received(1).RemoveRunningJobAsync(JobName);
+            await service.Received(1).OnJobDeployFailed(job, exception);
+            await service.DidNotReceive().OnJobStarted(job);
+
+            // The failed job doesn't take the only slot, so the next job is deployed
+            await kubernetesClient.Received(1).DeployJobAsync(queuedJob2.JobTemplate);
+            await service.Received(1).OnJobStarted(job2);
+        }
+
+        [Fact]
+        public async Task DeployQueuedJobs_OnJobDeployFailedThrows_ExceptionReachesCaller()
+        {
+            // Arrange
+            var exception = new KubernetesJobDeployException(JobName, null, null, new Exception("kubernetes api down"));
+            var hookException = new Exception("error in deploy failed");
+
+            queue.QueuedJobs.Add(queuedJob);
+            kubernetesClient.DeployJobAsync(JobTemplate).ThrowsAsync(exception);
+            service.Configure().OnJobDeployFailed(job, exception).ThrowsAsync(hookException);
+
+            // Act
+            var act = () => service.DeployQueuedJobs();
+
+            // Assert
+            (await act.Should().ThrowAsync<Exception>()).Which.Should().BeSameAs(hookException);
+        }
+
+        [Fact]
+        public async Task DeployQueuedJobs_EntryWithoutJobId_DeploysWithoutHooks()
+        {
+            // Arrange
+            // Entries queued by an older version have no JobId
+            queue.QueuedJobs.Add(new QueueJobRedisMessage { JobName = JobName, JobTemplate = JobTemplate });
+
+            // Act
+            await service.DeployQueuedJobs();
+
+            // Assert
+            await kubernetesClient.Received(1).DeployJobAsync(JobTemplate);
+            await jobRepository.DidNotReceiveWithAnyArgs().GetById(null);
+            await service.DidNotReceiveWithAnyArgs().OnJobStarted(null);
+        }
+
+        [Fact]
+        public async Task DeployQueuedJobs_JobModelNotFound_DeploysWithoutHooks()
+        {
+            // Arrange
+            queue.QueuedJobs.Add(queuedJob);
+            jobRepository.GetById(JobId).Returns((TestDeployJobModel)null);
+
+            // Act
+            await service.DeployQueuedJobs();
+
+            // Assert
+            await kubernetesClient.Received(1).DeployJobAsync(JobTemplate);
+            await service.DidNotReceiveWithAnyArgs().OnJobStarted(null);
+        }
+
+        [Fact]
         public async Task DeployOrQueueJob_DeployJobImmediately()
         {
             // Arrange
@@ -131,7 +230,7 @@ namespace Samhammer.KubernetesJob.Test.Job.Deploy
             Received.InOrder(async () =>
             {
                 await redisQueueClient.GetAsync();
-                await redisQueueClient.AddJobToRunningListAsync(Arg.Is<QueueJobRedisMessage>(c => c.JobName == JobName));
+                await redisQueueClient.AddJobToRunningListAsync(Arg.Is<QueueJobRedisMessage>(c => c.JobId == JobId && c.JobName == JobName));
                 await kubernetesClient.DeployJobAsync(Arg.Is<string>(c => c == JobTemplate));
             });
 
