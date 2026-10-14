@@ -157,7 +157,7 @@ namespace Samhammer.KubernetesJob.Kubernetes
             }
             catch (Exception e)
             {
-                Logger.LogError(e, "Unexpected error while reading k8s-job {JobName} of namespace {Namespace}", kubernetesNamespace, jobName);
+                Logger.LogError(e, "Unexpected error while reading k8s-job {JobName} of namespace {Namespace}", jobName, kubernetesNamespace);
             }
 
             return null;

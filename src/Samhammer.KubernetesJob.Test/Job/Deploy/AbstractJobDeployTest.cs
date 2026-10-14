@@ -62,17 +62,18 @@ namespace Samhammer.KubernetesJob.Test.Job.Deploy
         public async Task DeployQueuedJobs_DeployAllJobs_UntilMaxJobsAllowed_Successfully()
         {
             // Arrange
-            queue.QueuedJobs.Add(new QueueJobRedisMessage { JobName = "1", JobTemplate = "template1" });
-            queue.QueuedJobs.Add(new QueueJobRedisMessage { JobName = "2", JobTemplate = "template2" });
-            queue.QueuedJobs.Add(new QueueJobRedisMessage { JobName = "3", JobTemplate = "template3" });
+            // MaxRunningJobs is 1, so only the first queued job is deployed
+            queue.QueuedJobs.Add(queuedJob);
+            queue.QueuedJobs.Add(new QueueJobRedisMessage { JobId = "AnyId2", JobName = "any2", JobTemplate = "anyTemplate2" });
+            queue.QueuedJobs.Add(new QueueJobRedisMessage { JobId = "AnyId3", JobName = "any3", JobTemplate = "anyTemplate3" });
 
             // Act
             await service.DeployQueuedJobs();
 
             // Assert
-            var jobContract1 = queue.QueuedJobs[0];
-
-            await kubernetesClient.Received(1).DeployJobAsync(Arg.Is<string>(c => c == jobContract1.JobTemplate));
+            await kubernetesClient.Received(1).DeployJobAsync(Arg.Any<string>());
+            await kubernetesClient.Received(1).DeployJobAsync(JobTemplate);
+            await service.Received(1).OnJobStarted(job);
         }
 
         [Fact]

@@ -45,8 +45,13 @@ File: `src/Samhammer.KubernetesJob/Job/AbstractJobDeployService.cs:38`
 
 ### 2b. Hooks in `DeployQueuedJobs`
 
-**Status:** implemented with the queue tests from 2c, not reviewed yet. Simplified compared to the bullets below: entries without `JobId` and entries whose model isn't found take the same path. They get the new order and Redis cleanup, only the hooks are skipped (with a warning). Nothing is removed from the queue just because the model is missing. The hooks never receive `null`, so consumers don't need null checks. The model is only loaded after the try/catch, right before the hooks: the caught exception decides whether `OnJobStarted` or `OnJobDeployFailed` is called. So a Mongo outage doesn't block the deploy itself.
-File: `src/Samhammer.KubernetesJob/Job/AbstractJobDeployService.cs:100`
+**Status:** done and reviewed, including the queue tests from 2c. Implementation notes:
+- Entries without `JobId` and entries whose model isn't found take the same path: new order and Redis cleanup, only the hooks are skipped (with a warning). Nothing is removed from the queue just because the model is missing. The hooks never receive `null`, so consumers don't need null checks.
+- The model is only loaded after the try/catch, right before the hooks. So a Mongo outage doesn't block the deploy itself.
+- `DeployOrQueueJob` and `DeployQueuedJobs` use the same pattern: the catch only logs, cleans up Redis and stores the exception. After the try/catch, the stored exception decides which hook is called.
+- Log messages contain `{JobId} ({JobName})` wherever both are available, so they can be matched with the Kubernetes client's logs (which only know the job name).
+
+File: `src/Samhammer.KubernetesJob/Job/AbstractJobDeployService.cs:145`
 
 - **The hooks (`OnJobStarted`, `OnJobDeployFailed`) receive the full job model, loaded from Mongo**, the same as in the direct deploy.
 - To load it, the Redis entry needs the model's key: **add `JobId` to `QueueJobRedisMessage`** and set it in `DeployOrQueueJob`. This is only the lookup key, never passed to the hooks. Avoid parsing the job name, because `CreateJobName` is defined by the consumer and can't be reversed reliably. Matching against `GetRunningAndCreatedJobs` doesn't work either, because that list isn't guaranteed to contain queued jobs.
@@ -55,12 +60,15 @@ File: `src/Samhammer.KubernetesJob/Job/AbstractJobDeployService.cs:100`
   - Load the model with `JobRepository.GetById(job.JobId)`. If there's no `JobId` (old entry from before the release, only during the transition) or the model isn't found (should never happen): log a warning and deploy without hooks.
   - Swap the order to `MoveJobToRunningAsync`, then `DeployJobAsync` (like `AddJobToRunningListAsync` before `DeployJobAsync` in 2a). With the old order, a failing move after a successful deploy would call `OnJobDeployFailed` for a job that is running, and the retry would start a duplicate. With the new order, a failing deploy is undone by the cleanup below.
   - Wrap `MoveJobToRunningAsync` and `DeployJobAsync` in a try/catch:
-    - Success: `OnJobStarted(model)`, then `runningJobCount++`.
+    - Success: `runningJobCount++`, then `OnJobStarted(model)`.
     - Failure: `RemoveQueuedJobAsync` and `RemoveRunningJobAsync` (best effort), then `OnJobDeployFailed(model, e)`, then **continue with the next job**. The slot isn't counted.
 - The entry is removed from the queue on failure, so it no longer gets stuck in `Queued` forever.
 - If the hook rethrows, the tick ends early, which is the old behaviour. The failed entry is already removed from the queue, so it doesn't block later ticks.
 
 ### 2c. Tests in `AbstractJobDeployTest`
+
+**Status:** done. All cases below are covered. The test class uses a partial substitute (`Substitute.ForPartsOf`) instead of a hand-written test subclass, so hook calls are checked with `Received`.
+
 - Direct deploy where `DeployJobAsync` throws: `OnJobDeployFailed` is called, the job is removed from the running list, and `OnJobStarted` isn't called.
 - Direct deploy where `AddJobToQueueAsync` or `AddJobToRunningListAsync` throws: `OnJobDeployFailed` is called.
 - Queue deploy succeeds: `OnJobStarted` is called with the loaded model.
@@ -83,7 +91,6 @@ File: `src/Samhammer.KubernetesJob/Kubernetes/AbstractJobKubernetesClient.cs:133
 - Add `KubernetesJobStatus.Unknown`, appended at the end of the enum so existing values keep their positions.
 - `ReadJobAsync` returns `null` only for a 404. Any other error throws, or `GetJobStatusAsync` catches it and returns `Unknown`. Recommended: return `Unknown`, so the cleanup loop keeps going through the other jobs.
 - `CleanupJobs` ignores `Unknown`: it logs a warning and calls no hook.
-- **TODO:** fix the log in `ReadJobAsync` (`AbstractJobKubernetesClient.cs:160`): it passes `kubernetesNamespace, jobName` to the template `{JobName} of namespace {Namespace}`, so both values end up in the wrong place.
 
 ### 3b. A failed job list must not clear the running list
 File: `src/Samhammer.KubernetesJob/Job/AbstractJobCleanupService.cs:87`
