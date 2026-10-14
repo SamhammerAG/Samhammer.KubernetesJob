@@ -10,7 +10,7 @@ Note: This is built upon multiple of our other libraries:
 * Samhammer.TimedHostedService (Mandatory)
 * Samhammer.DependencyInjection (Mandatory)
 * Samhammer.Mongo (Mandatory - only built to be used with mongodb)
-* Samhammer.Options (Optional - if used as dscribed below with the Option attribute)
+* Samhammer.Options (Optional - if used as described below with the Option attribute)
 
 ### Model:
 Create a custom model to track import details and status.
@@ -77,8 +77,7 @@ Example configuration in appsettings:
     "RedisManagerKey": "myapp:import-job",
     "RedisLockExpireTime": "00:00:30",
     "RedisLockWaitTime": "00:00:30",
-    "RedisLockRetryTime": "00:00:01",
-    "JobDeployInterval": "00:00:10",
+    "RedisLockRetryTime": "00:00:01"
   },
 ```
 
@@ -99,7 +98,7 @@ public class MyImportRepositoryMongo : BaseRepositoryMongo<MyImportModel>, IMyIm
     public async Task<List<MyImportModel>> GetRunningAndCreatedJobs()
     {
         // Load all jobs that are running or stay in created without being queued
-        var filter = Filter.Where(m => m.Status == MyImportStatus.Created || m.Status == MyImportStatus.Processing);
+        var filter = Filter.Where(m => m.Status == MyImportJobStatus.Created || m.Status == MyImportJobStatus.Processing);
 
         var jobs = await Collection.Find(filter).ToListAsync();
 
@@ -112,23 +111,37 @@ public interface IMyImportRepositoryMongo : IBaseJobRepository<MyImportModel>, I
 }
 ```
 
+`IBaseJobRepository` also requires `GetById`, which is used to load the job model of queued jobs for the hooks. It is already provided by `BaseRepositoryMongo`, so nothing needs to be implemented if your repository inherits from it.
+
 ### Handle Job Deployment:
 
-Use the job deploy service to update your job collection (status) if your job gets queued or started
+Use the job deploy service to update your job collection (status) if your job gets queued, started or its deployment failed.
+
+* `OnJobQueued`: the job was added to the redis queue, because the max. number of jobs is already running
+* `OnJobStarted`: the job was deployed to kubernetes, either directly or later from the redis queue
+* `OnJobDeployFailed`: adding the job to redis or deploying it to kubernetes failed, either directly or later from the redis queue. The job is removed from the redis queue, so it doesn't block other jobs.
+* `OnCouldNotAcquireLock`: the redis lock could not be acquired, the job was neither queued nor deployed
+
+Deploy errors are caught and logged by the library and are **not** thrown to the caller of `DeployOrQueueJob`.
+You should override `OnJobDeployFailed`, otherwise the job stays in its current status (e.g. `Created`) forever.
+Rethrow the exception in the hook if the caller should get it.
+
+Hooks are called after the redis and kubernetes operations, so an error in a success hook doesn't mark a deployed job as failed.
+For queued jobs the job model is loaded with `GetById`. If it can't be found, the job is still deployed, but no hook is called.
 
 ```csharp
-public class MyImportJobDeployService : AbstractJobDeployService<MyImportModel, IMyImportRepositoryMongo, ImportJobOptions, IMyImportImportJobKubernetesClient, IMyImportImportJobRedisQueueClient>, IMyImportImportJobDeployService
+public class MyImportJobDeployService : AbstractJobDeployService<MyImportModel, IMyImportRepositoryMongo, ImportJobOptions, IMyImportJobKubernetesClient, IMyImportJobRedisQueueClient>, IMyImportJobDeployService
 {
     public MyImportJobDeployService(ILogger<MyImportJobDeployService> logger, IOptions<ImportJobOptions> options,
-    TJobRepository jobRepository
-    IMyImportImportJobKubernetesClient jobKubernetesClient, IMyImportImportJobRedisQueueClient jobRedisQueueClient)
+    IMyImportRepositoryMongo jobRepository,
+    IMyImportJobKubernetesClient jobKubernetesClient, IMyImportJobRedisQueueClient jobRedisQueueClient)
         : base(logger, options, jobRepository, jobKubernetesClient, jobRedisQueueClient)
     {
     }
 
     public override async Task OnCouldNotAcquireLock(MyImportModel jobModel)
     {
-        // The redis lock could not be acquired within the confugired time
+        // The redis lock could not be acquired within the configured time
     }
 
     public override async Task OnJobQueued(MyImportModel jobModel)
@@ -139,6 +152,16 @@ public class MyImportJobDeployService : AbstractJobDeployService<MyImportModel, 
     public override async Task OnJobStarted(MyImportModel jobModel)
     {
         // The job has been started
+    }
+
+    public override async Task OnJobDeployFailed(MyImportModel jobModel, Exception exception)
+    {
+        // The job could not be queued or deployed, e.g. set a failure status
+        jobModel.Status = MyImportJobStatus.Failed;
+        await JobRepository.Save(jobModel);
+
+        // Or rethrow the exception, so the caller of DeployOrQueueJob gets it
+        // ExceptionDispatchInfo.Throw(exception);
     }
 }
 ```
@@ -174,7 +197,7 @@ public class MyImportJobKubernetesClient : AbstractJobKubernetesClient<MyImportM
         // Set all placeholders that you use in your template
         return new Dictionary<string, string>
         {
-            { "jobId", model.Id }
+            { "jobId", model.Id },
             { "name", CreateJobName(model) }
         };
     }
@@ -243,7 +266,7 @@ The job will be started immediately or queued if the max. number of jobs is alre
 var jobModel = new MyImportModel
 {
     Creator = userName,
-    Status = PublishJobStatus.Created
+    Status = MyImportJobStatus.Created
     // DateCreated will be set internally
 };
 

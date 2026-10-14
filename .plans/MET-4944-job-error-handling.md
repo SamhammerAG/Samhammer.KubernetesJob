@@ -78,6 +78,9 @@ File: `src/Samhammer.KubernetesJob/Job/AbstractJobDeployService.cs:145`
 - Model not found: deployed with no hooks.
 
 ### 2d. README
+
+**Status:** done, not reviewed yet.
+
 Document `OnJobDeployFailed` (required, with examples: set a failure status, or rethrow to keep the old behaviour), `GetById` and the "hooks now also fire for queued jobs" behaviour.
 
 ---
