@@ -35,6 +35,7 @@ namespace Samhammer.KubernetesJob.Test.Kubernetes
 
         private readonly TestJobKubernetesClient client;
         private readonly IBatchV1Operations batchV1;
+        private readonly TestDeployJobModel job = new() { Id = "AnyId" };
 
         public AbstractJobKubernetesClientTest()
         {
@@ -104,6 +105,63 @@ namespace Samhammer.KubernetesJob.Test.Kubernetes
             exception.InnerException.Should().BeSameAs(unexpectedException);
         }
 
+        [Fact]
+        public async Task GetJobStatusAsync_JobRunning_ReturnsRunning()
+        {
+            // Arrange
+            batchV1.ReadNamespacedJobWithHttpMessagesAsync(null, null, cancellationToken: TestContext.Current.CancellationToken)
+                .ReturnsForAnyArgs(new HttpOperationResponse<V1Job> { Body = new V1Job() });
+
+            // Act
+            var status = await client.GetJobStatusAsync(job);
+
+            // Assert
+            status.Should().Be(KubernetesJobStatus.Running);
+            await batchV1.Received(1).ReadNamespacedJobWithHttpMessagesAsync(JobName, Namespace, cancellationToken: Arg.Any<CancellationToken>());
+        }
+
+        [Fact]
+        public async Task GetJobStatusAsync_JobNotFound_ReturnsDeleted()
+        {
+            // Arrange
+            batchV1.ReadNamespacedJobWithHttpMessagesAsync(null, null, cancellationToken: TestContext.Current.CancellationToken)
+                .ThrowsAsyncForAnyArgs(CreateHttpOperationException(HttpStatusCode.NotFound, "not found"));
+
+            // Act
+            var status = await client.GetJobStatusAsync(job);
+
+            // Assert
+            status.Should().Be(KubernetesJobStatus.Deleted);
+        }
+
+        [Fact]
+        public async Task GetJobStatusAsync_ReadFailsWithHttpError_ReturnsUnknown()
+        {
+            // Arrange
+            batchV1.ReadNamespacedJobWithHttpMessagesAsync(null, null, cancellationToken: TestContext.Current.CancellationToken)
+                .ThrowsAsyncForAnyArgs(CreateHttpOperationException(HttpStatusCode.InternalServerError, "kubernetes api down"));
+
+            // Act
+            var status = await client.GetJobStatusAsync(job);
+
+            // Assert
+            status.Should().Be(KubernetesJobStatus.Unknown);
+        }
+
+        [Fact]
+        public async Task GetJobStatusAsync_ReadFailsUnexpectedly_ReturnsUnknown()
+        {
+            // Arrange
+            batchV1.ReadNamespacedJobWithHttpMessagesAsync(null, null, cancellationToken: TestContext.Current.CancellationToken)
+                .ThrowsAsyncForAnyArgs(new HttpRequestException("connection refused"));
+
+            // Act
+            var status = await client.GetJobStatusAsync(job);
+
+            // Assert
+            status.Should().Be(KubernetesJobStatus.Unknown);
+        }
+
         private static HttpOperationException CreateHttpOperationException(HttpStatusCode statusCode, string content)
         {
             return new HttpOperationException
@@ -140,6 +198,11 @@ namespace Samhammer.KubernetesJob.Test.Kubernetes
             protected override string GetTemplateDirectory()
             {
                 throw new NotSupportedException();
+            }
+
+            protected override string ReadTemplate()
+            {
+                return JobTemplate;
             }
 
             protected override Dictionary<string, string> CreateJobTypeLabelSelector()

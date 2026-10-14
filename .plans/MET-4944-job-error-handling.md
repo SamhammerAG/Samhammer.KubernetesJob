@@ -87,6 +87,8 @@ Document `OnJobDeployFailed` (required, with examples: set a failure status, or 
 
 ## Step 3: MET-4968, status mapping and Redis cleanup
 
+**Status:** 3a implemented with tests, not reviewed yet. 3b and 3c follow as separate commits. Different from the 3a bullets below: `ReadJobAsync` still doesn't throw, it returns a tuple `(V1Job Job, HttpStatusCode? StatusCode)`. `MapJobStatus` uses the status code when the job is `null`: only a 404 means `Deleted`, anything else is `Unknown`. No consumer (Asimov, Metis) calls `ReadJobAsync`, so changing its return type is safe.
+
 ### 3a. Only a 404 means "deleted"
 File: `src/Samhammer.KubernetesJob/Kubernetes/AbstractJobKubernetesClient.cs:133-172`
 
@@ -101,7 +103,12 @@ File: `src/Samhammer.KubernetesJob/Job/AbstractJobCleanupService.cs:87`
 - `GetJobsAsync` returns an empty list on error. `CleanupRedisQueue` then removes **all** running jobs from Redis, so `MaxRunningJobs` stops being enforced.
 - Fix: `GetJobsAsync` rethrows, or returns `null`. `CleanupRedisQueue` catches it, logs, and skips this run.
 
-### 3c. Tests
+### 3c. Log improvements in `AbstractJobKubernetesClient`
+- Rename the placeholder `{Status}` to `{StatusCode}`. `Status` is too generic and can clash with other status logs (e.g. the job status).
+- Log the status code as a number: pass `(int?)statusCode` instead of the `HttpStatusCode` enum, so `404` is logged instead of `NotFound`. That's how the status code is logged in our other projects.
+- Affected: the create, read and delete logs (`LogError` and the `LogDebug` for 404). Also remove the extra `'` at the end of the read `LogDebug` (`'{Status}''`).
+
+### 3d. Tests
 - `GetJobStatusAsync` maps a 404 to `Deleted` and a 500 to `Unknown`. This needs the `GetKubernetes()` seam from step 1.
 - `CleanupJobs` with `Unknown`: neither hook is called.
 - `CleanupRedisQueue` when `GetJobsAsync` fails: `RemoveRunningJobsExceptAsync` isn't called.

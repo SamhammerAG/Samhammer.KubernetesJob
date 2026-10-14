@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using AwesomeAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Samhammer.KubernetesJob.Kubernetes;
@@ -96,6 +97,25 @@ namespace Samhammer.KubernetesJob.Test.Job.Cleanup
             // Assert
             Assert.Equivalent(service.DeletedJobIds, new List<string>());
             Assert.Equivalent(service.FailedJobIds, new List<string>());
+        }
+
+        [Fact]
+        public async Task CleanupJobs_StatusUnknown_CallsNoHook()
+        {
+            // Arrange
+            var job = new TestCleanupJobModel { Id = "JobJobModelId1", Status = TestCleanupJobStatus.Running };
+
+            jobRepository.GetRunningAndCreatedJobs().Returns(new List<TestCleanupJobModel> { job });
+
+            // E.g. the kubernetes api is not reachable
+            kubernetesClient.GetJobStatusAsync(job).Returns(KubernetesJobStatus.Unknown);
+
+            // Act
+            await service.CleanupJobs();
+
+            // Assert
+            service.DeletedJobIds.Should().BeEmpty();
+            service.FailedJobIds.Should().BeEmpty();
         }
     }
 }

@@ -55,6 +55,10 @@ namespace Samhammer.KubernetesJob.Job
                         Logger.LogWarning("Job {JobId} is failed", jobModel.Id);
                         await OnKubernetesJobFailed(jobModel);
                         break;
+                    case KubernetesJobStatus.Unknown:
+                        // E.g. the kubernetes api is not reachable. The job is checked again in the next run.
+                        Logger.LogWarning("Status of job {JobId} is unknown. Skipping it until the next cleanup", jobModel.Id);
+                        break;
                 }
             }
         }

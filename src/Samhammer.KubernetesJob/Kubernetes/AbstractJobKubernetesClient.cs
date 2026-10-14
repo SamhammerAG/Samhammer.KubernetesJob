@@ -35,10 +35,14 @@ namespace Samhammer.KubernetesJob.Kubernetes
         public string CreateJobTemplate(T jobModel)
         {
             var placeholderValues = CreatePlaceholderDictionary(jobModel);
-            var templateDir = GetTemplateDirectory();
-            var templateData = System.IO.File.ReadAllText(templateDir);
+            var templateData = ReadTemplate();
             var parsingTemplate = Template.Parse(templateData);
             return parsingTemplate.Render(placeholderValues);
+        }
+
+        protected virtual string ReadTemplate()
+        {
+            return System.IO.File.ReadAllText(GetTemplateDirectory());
         }
 
         public abstract string CreateJobName(T jobModel);
@@ -132,14 +136,16 @@ namespace Samhammer.KubernetesJob.Kubernetes
 
         protected abstract Dictionary<string, string> CreateJobTypeLabelSelector();
 
-        protected async Task<V1Job> ReadJobAsync(V1Job job)
+        // Returns the job, or null and the status code of the failed request (null if the request failed without a response)
+        protected async Task<(V1Job Job, HttpStatusCode? StatusCode)> ReadJobAsync(V1Job job)
         {
             var kubernetesNamespace = job.Metadata.NamespaceProperty;
             var jobName = job.Metadata.Name;
 
             try
             {
-                return await GetKubernetes().BatchV1.ReadNamespacedJobAsync(jobName, kubernetesNamespace);
+                var readJob = await GetKubernetes().BatchV1.ReadNamespacedJobAsync(jobName, kubernetesNamespace);
+                return (readJob, null);
             }
             catch (HttpOperationException e)
             {
@@ -154,20 +160,21 @@ namespace Samhammer.KubernetesJob.Kubernetes
                 {
                     Logger.LogError(e, "Reading k8s-job '{JobName}' failed with status code '{Status}' and response '{Response}'", jobName, statusCode, response);
                 }
+
+                return (null, statusCode);
             }
             catch (Exception e)
             {
                 Logger.LogError(e, "Unexpected error while reading k8s-job {JobName} of namespace {Namespace}", jobName, kubernetesNamespace);
+                return (null, null);
             }
-
-            return null;
         }
 
         public async Task<KubernetesJobStatus> GetJobStatusAsync(T jobModel)
         {
             var jobDefinition = CreateJobDefinition(jobModel);
-            var job = await ReadJobAsync(jobDefinition);
-            var kubernetesJobStatus = MapJobStatus(job);
+            var (job, statusCode) = await ReadJobAsync(jobDefinition);
+            var kubernetesJobStatus = MapJobStatus(job, statusCode);
 
             Logger.LogDebug("GetOrCreateConfigs status of k8s-job '{JobName}' returned '{KubernetesStatus}'", jobDefinition.Metadata.Name, kubernetesJobStatus);
             return kubernetesJobStatus;
@@ -190,11 +197,12 @@ namespace Samhammer.KubernetesJob.Kubernetes
             return status.Contains(jobStatus);
         }
 
-        private KubernetesJobStatus MapJobStatus(V1Job job)
+        private KubernetesJobStatus MapJobStatus(V1Job job, HttpStatusCode? statusCode = null)
         {
             if (job == null)
             {
-                return KubernetesJobStatus.Deleted;
+                // Only a 404 means the job is deleted. Any other error (e.g. kubernetes api not reachable) must not be treated as deleted.
+                return statusCode == HttpStatusCode.NotFound ? KubernetesJobStatus.Deleted : KubernetesJobStatus.Unknown;
             }
 
             if (job.Status == null || job.Status.Conditions == null)
