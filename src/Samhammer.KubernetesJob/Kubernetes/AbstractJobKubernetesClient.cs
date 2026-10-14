@@ -96,7 +96,7 @@ namespace Samhammer.KubernetesJob.Kubernetes
                 var statusCode = e.Response?.StatusCode;
                 var response = e.Response?.Content;
 
-                Logger.LogError(e, "Creating k8s-job '{JobName}' failed with status code '{Status}' and response '{Response}'", jobName, statusCode, response);
+                Logger.LogError(e, "Creating k8s-job '{JobName}' failed with status code '{StatusCode}' and response '{Response}'", jobName, (int?)statusCode, response);
                 throw new KubernetesJobDeployException(jobName, statusCode, response, e);
             }
             catch (Exception e)
@@ -155,11 +155,11 @@ namespace Samhammer.KubernetesJob.Kubernetes
 
                 if (statusCode == HttpStatusCode.NotFound)
                 {
-                    Logger.LogDebug("Reading k8s-job '{JobName}' skipped, status code '{Status}''", jobName, statusCode);
+                    Logger.LogDebug("Reading k8s-job '{JobName}' skipped, status code '{StatusCode}'", jobName, (int?)statusCode);
                 }
                 else
                 {
-                    Logger.LogError(e, "Reading k8s-job '{JobName}' failed with status code '{Status}' and response '{Response}'", jobName, statusCode, response);
+                    Logger.LogError(e, "Reading k8s-job '{JobName}' failed with status code '{StatusCode}' and response '{Response}'", jobName, (int?)statusCode, response);
                 }
 
                 return (null, statusCode);
@@ -236,7 +236,7 @@ namespace Samhammer.KubernetesJob.Kubernetes
                 var statusCode = e.Response?.StatusCode;
                 var response = e.Response?.Content;
 
-                Logger.LogError(e, "Deleting k8s-job '{JobName}' failed with status code '{Status}' and response '{Response}'", job.Metadata.Name, statusCode, response);
+                Logger.LogError(e, "Deleting k8s-job '{JobName}' failed with status code '{StatusCode}' and response '{Response}'", job.Metadata.Name, (int?)statusCode, response);
             }
             catch (Exception e)
             {
@@ -273,7 +273,7 @@ namespace Samhammer.KubernetesJob.Kubernetes
                 // Ignore not found (already deleted)
                 if (statusCode == HttpStatusCode.NotFound)
                 {
-                    Logger.LogDebug("Deleting k8s-job '{JobName}' skipped, status code '{Status}'", jobName, statusCode);
+                    Logger.LogDebug("Deleting k8s-job '{JobName}' skipped, status code '{StatusCode}'", jobName, (int?)statusCode);
                 }
                 else
                 {

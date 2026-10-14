@@ -87,7 +87,11 @@ Document `OnJobDeployFailed` (required, with examples: set a failure status, or 
 
 ## Step 3: MET-4968, status mapping and Redis cleanup
 
-**Status:** 3a done (committed). 3b done and reviewed: `GetJobsAsync` rethrows, `CleanupRedisQueue` catches it, logs a warning and skips the run. 3c follows as a separate commit. Different from the 3a bullets below: `ReadJobAsync` still doesn't throw, it returns a tuple `(V1Job Job, HttpStatusCode? StatusCode)`. `MapJobStatus` uses the status code when the job is `null`: only a 404 means `Deleted`, anything else is `Unknown`. No consumer (Asimov, Metis) calls `ReadJobAsync`, so changing its return type is safe.
+**Status:** done and reviewed.
+- 3a: different from the bullets below, `ReadJobAsync` still doesn't throw. It returns a tuple `(V1Job Job, HttpStatusCode? StatusCode)`, and `MapJobStatus` uses the status code when the job is `null`: only a 404 means `Deleted`, anything else is `Unknown`. No consumer (Asimov, Metis) calls `ReadJobAsync`, so changing its return type is safe.
+- 3b: `GetJobsAsync` rethrows, `CleanupRedisQueue` catches it, logs a warning and skips the run.
+- 3c: `{StatusCode}` logged as `(int?)statusCode`, so the field has the same numeric type as in our other projects.
+- 3d: all tests below are covered. New test seam `protected virtual string ReadTemplate()`, so the client tests don't need a template file.
 
 ### 3a. Only a 404 means "deleted"
 File: `src/Samhammer.KubernetesJob/Kubernetes/AbstractJobKubernetesClient.cs:133-172`
