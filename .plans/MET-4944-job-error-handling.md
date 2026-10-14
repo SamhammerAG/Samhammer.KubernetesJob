@@ -79,13 +79,15 @@ File: `src/Samhammer.KubernetesJob/Job/AbstractJobDeployService.cs:145`
 
 ### 2d. README
 
-**Status:** done, not reviewed yet.
+**Status:** done and reviewed.
 
 Document `OnJobDeployFailed` (required, with examples: set a failure status, or rethrow to keep the old behaviour), `GetById` and the "hooks now also fire for queued jobs" behaviour.
 
 ---
 
 ## Step 3: MET-4968, status mapping and Redis cleanup
+
+**Status:** done on the separate branch `MET-4968-job-cleanup-handling`, released after steps 1 and 2.
 
 ### 3a. Only a 404 means "deleted"
 File: `src/Samhammer.KubernetesJob/Kubernetes/AbstractJobKubernetesClient.cs:133-172`
