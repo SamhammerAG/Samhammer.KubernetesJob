@@ -83,13 +83,7 @@ namespace Samhammer.KubernetesJob.Kubernetes
             {
                 Logger.LogInformation("Creating k8s-job '{JobName}'", jobName);
 
-                var createdJob = await GetKubernetes().BatchV1.CreateNamespacedJobAsync(job, job.Metadata.NamespaceProperty);
-                var jobStatus = MapJobStatus(createdJob);
-
-                if (jobStatus != KubernetesJobStatus.Running)
-                {
-                    Logger.LogError("Creating k8s-job '{JobName}' failed with result {@K8sJob}'", jobName, createdJob);
-                }
+                await GetKubernetes().BatchV1.CreateNamespacedJobAsync(job, job.Metadata.NamespaceProperty);
             }
             catch (HttpOperationException e)
             {
