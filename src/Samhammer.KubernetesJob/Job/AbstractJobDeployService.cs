@@ -20,7 +20,7 @@ namespace Samhammer.KubernetesJob.Job
 
         protected IOptions<TOptions> Options { get; }
 
-        private TJobKubernetesClient JobKubernetesClient { get; }
+        protected TJobKubernetesClient JobKubernetesClient { get; }
 
         private TJobRedisQueueClient JobRedisQueueClient { get; }
 
