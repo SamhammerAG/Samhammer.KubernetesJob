@@ -8,6 +8,8 @@ namespace Samhammer.KubernetesJob.MongoDb
     {
         Task<List<T>> GetRunningAndCreatedJobs();
 
+        Task<T> GetById(string id);
+
         Task Save(T jobModel);
     }
 }
