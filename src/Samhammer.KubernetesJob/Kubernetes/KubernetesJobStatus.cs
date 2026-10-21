@@ -5,6 +5,7 @@
         Running,
         Completed,
         Failed,
-        Deleted
+        Deleted,
+        Unknown
     }
 }
