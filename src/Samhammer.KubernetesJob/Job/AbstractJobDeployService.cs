@@ -20,7 +20,7 @@ namespace Samhammer.KubernetesJob.Job
 
         protected IOptions<TOptions> Options { get; }
 
-        private TJobKubernetesClient JobKubernetesClient { get; }
+        protected TJobKubernetesClient JobKubernetesClient { get; }
 
         private TJobRedisQueueClient JobRedisQueueClient { get; }
 
@@ -164,6 +164,10 @@ namespace Samhammer.KubernetesJob.Job
 
                 Logger.LogInformation("Start deploying job {JobId} ({JobName}) from redis queue", job.JobId, job.JobName);
 
+                // Loaded before deploying, so a mongo error throws while the job is still in the queue, instead of leaving a deployed job without its status update.
+                // JobId is null for entries queued by an older version. The null check can be removed in a future version, once no such entries are left.
+                var jobModel = job.JobId != null ? await JobRepository.GetById(job.JobId) : null;
+
                 Exception deployException = null;
 
                 try
@@ -182,10 +186,7 @@ namespace Samhammer.KubernetesJob.Job
                     deployException = e;
                 }
 
-                // Hooks are called outside the try block, so a failing hook doesn't mark a deployed job as failed.
-                // JobId is null for entries queued by an older version. The null check can be removed in a future version, once no such entries are left.
-                var jobModel = job.JobId != null ? await JobRepository.GetById(job.JobId) : null;
-
+                // Hooks are called outside the try block, so a failing hook doesn't mark a deployed job as failed
                 if (jobModel == null)
                 {
                     Logger.LogWarning("No job model found for queued job {JobId} ({JobName}). Skipping hooks", job.JobId, job.JobName);

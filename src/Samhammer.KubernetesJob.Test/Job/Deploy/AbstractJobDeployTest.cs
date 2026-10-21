@@ -134,11 +134,37 @@ namespace Samhammer.KubernetesJob.Test.Job.Deploy
             // Assert
             Received.InOrder(async () =>
             {
+                await jobRepository.GetById(JobId);
                 await redisQueueClient.MoveJobToRunningAsync(queuedJob);
                 await kubernetesClient.DeployJobAsync(JobTemplate);
             });
 
             await service.Received(1).OnJobStarted(job);
+            await service.DidNotReceiveWithAnyArgs().OnJobDeployFailed(null, null);
+        }
+
+        [Fact]
+        public async Task DeployQueuedJobs_LoadingJobModelFails_ThrowsAndKeepsJobsInQueueWithoutDeploying()
+        {
+            // Arrange
+            var mongoException = new Exception("mongo down");
+
+            queue.QueuedJobs.Add(queuedJob);
+            queue.QueuedJobs.Add(new QueueJobRedisMessage { JobId = "AnyId2", JobName = "any2", JobTemplate = "anyTemplate2" });
+            options.MaxRunningJobs = 2;
+            jobRepository.GetById(JobId).ThrowsAsync(mongoException);
+
+            // Act
+            var act = () => service.DeployQueuedJobs();
+
+            // Assert
+            (await act.Should().ThrowAsync<Exception>()).Which.Should().BeSameAs(mongoException);
+
+            await redisQueueClient.DidNotReceiveWithAnyArgs().MoveJobToRunningAsync(null);
+            await redisQueueClient.DidNotReceiveWithAnyArgs().RemoveQueuedJobAsync(null);
+            await kubernetesClient.DidNotReceiveWithAnyArgs().DeployJobAsync((string)null);
+            await jobRepository.DidNotReceive().GetById("AnyId2");
+            await service.DidNotReceiveWithAnyArgs().OnJobStarted(null);
             await service.DidNotReceiveWithAnyArgs().OnJobDeployFailed(null, null);
         }
 
