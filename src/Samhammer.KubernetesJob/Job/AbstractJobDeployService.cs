@@ -37,7 +37,12 @@ namespace Samhammer.KubernetesJob.Job
 
         public async Task DeployOrQueueJob(TJobModel jobModel)
         {
-            jobModel.DateCreated = DateTime.UtcNow;
+            // Only set if missing, so a job that is deployed again (e.g. a retry) keeps its original creation date
+            if (jobModel.DateCreated == default)
+            {
+                jobModel.DateCreated = DateTime.UtcNow;
+            }
+
             await JobRepository.Save(jobModel);
 
             if (Options.Value.DisableJob)
