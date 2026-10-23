@@ -266,6 +266,35 @@ namespace Samhammer.KubernetesJob.Test.Job.Deploy
         }
 
         [Fact]
+        public async Task DeployOrQueueJob_DateCreatedNotSet_SetsDateCreatedBeforeSaving()
+        {
+            // Arrange
+            var before = DateTime.UtcNow;
+
+            // Act
+            await service.DeployOrQueueJob(job);
+
+            // Assert
+            job.DateCreated.Should().BeOnOrAfter(before).And.BeOnOrBefore(DateTime.UtcNow);
+            await jobRepository.Received(1).Save(job);
+        }
+
+        [Fact]
+        public async Task DeployOrQueueJob_DateCreatedAlreadySet_KeepsDateCreated()
+        {
+            // Arrange
+            var dateCreated = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            job.DateCreated = dateCreated;
+
+            // Act
+            await service.DeployOrQueueJob(job);
+
+            // Assert
+            job.DateCreated.Should().Be(dateCreated);
+            await jobRepository.Received(1).Save(job);
+        }
+
+        [Fact]
         public async Task DeployOrQueueJob_QueueNotEmpty_AddJobToQueue_Successfully()
         {
             // Arrange
